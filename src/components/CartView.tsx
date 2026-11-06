@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShoppingCart,
   Plus,
@@ -58,6 +58,26 @@ export const CartView: React.FC<CartViewProps> = ({
   const [editingDiscountId, setEditingDiscountId] = useState<string | null>(null);
   const [editingLineMode, setEditingLineMode] = useState<DiscountType>('PERCENT');
   const [tempDiscountVal, setTempDiscountVal] = useState<string>('');
+
+  // Reset discounts whenever cart is emptied so no discounts carry over to the next bill
+  useEffect(() => {
+    if (cart.length === 0) {
+      setOverallDiscountVal(0);
+      setCustomOverallDiscountInput('');
+      setOverallDiscountMode('PERCENT');
+      setEditingDiscountId(null);
+      setTempDiscountVal('');
+    }
+  }, [cart.length]);
+
+  const handleClearCartAndDiscounts = () => {
+    setOverallDiscountVal(0);
+    setCustomOverallDiscountInput('');
+    setOverallDiscountMode('PERCENT');
+    setEditingDiscountId(null);
+    setTempDiscountVal('');
+    onClearCart();
+  };
 
   // Calculations
   const rawSubtotal = cart.reduce((acc, item) => {
@@ -119,7 +139,7 @@ export const CartView: React.FC<CartViewProps> = ({
         </div>
         {cart.length > 0 && (
           <button
-            onClick={onClearCart}
+            onClick={handleClearCartAndDiscounts}
             className="text-xs text-rose-500 hover:text-rose-600 font-semibold transition-colors flex items-center space-x-1 cursor-pointer"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -246,29 +266,49 @@ export const CartView: React.FC<CartViewProps> = ({
                     }`}
                   >
                     <button
-                      onClick={() => onUpdateQuantity(item.product.id, item.quantity - 1)}
+                      type="button"
+                      onClick={() => onUpdateQuantity(item.product.id, Math.max(0, item.quantity - 1))}
                       className={`w-6 h-6 rounded-md flex items-center justify-center font-bold text-xs transition-colors cursor-pointer ${
                         isDark
                           ? 'bg-slate-800 hover:bg-slate-700 text-slate-200'
                           : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                       }`}
+                      title="Decrease quantity (-1)"
                     >
                       <Minus className="w-3 h-3" />
                     </button>
-                    <span
-                      className={`w-8 text-center text-xs font-extrabold ${
-                        isDark ? 'text-white' : 'text-slate-900'
+                    <input
+                      type="number"
+                      min="1"
+                      value={item.quantity}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        if (!isNaN(val)) {
+                          onUpdateQuantity(item.product.id, val);
+                        }
+                      }}
+                      onBlur={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        if (isNaN(val) || val <= 0) {
+                          onUpdateQuantity(item.product.id, 1);
+                        }
+                      }}
+                      className={`w-14 text-center text-xs font-black font-mono py-0.5 px-0.5 rounded border focus:outline-none focus:border-indigo-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
+                        isDark
+                          ? 'bg-slate-950 border-slate-700 text-white'
+                          : 'bg-white border-slate-300 text-slate-900'
                       }`}
-                    >
-                      {item.quantity}
-                    </span>
+                      title="Type quantity directly for large amounts"
+                    />
                     <button
+                      type="button"
                       onClick={() => onUpdateQuantity(item.product.id, item.quantity + 1)}
                       className={`w-6 h-6 rounded-md flex items-center justify-center font-bold text-xs transition-colors cursor-pointer ${
                         isDark
                           ? 'bg-slate-800 hover:bg-slate-700 text-slate-200'
                           : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                       }`}
+                      title="Increase quantity (+1)"
                     >
                       <Plus className="w-3 h-3" />
                     </button>

@@ -14,19 +14,24 @@ import {
   Sparkles,
   ShoppingBag,
   Barcode,
-  Keyboard
+  Keyboard,
+  Minus,
+  Plus
 } from 'lucide-react';
 import { Product, ThemeMode } from '../types';
 import { playScanBeep, triggerHaptic } from '../utils/audioHaptics';
 
 interface BarcodeScannerProps {
-  onScanSuccess: (barcode: string) => void;
+  onScanSuccess: (barcode: string, quantity?: number) => void;
   onUnrecognizedScan?: (barcode: string) => void;
   products: Product[];
   enableSound: boolean;
   enableHaptics: boolean;
   currencySymbol?: string;
   theme?: ThemeMode;
+  activeSubTab?: 'search' | 'barcode' | 'cart';
+  onSubTabChange?: (tab: 'search' | 'barcode' | 'cart') => void;
+  cartCount?: number;
 }
 
 export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
@@ -37,11 +42,22 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
   enableHaptics,
   currencySymbol = '₹',
   theme = 'dark',
+  activeSubTab,
+  onSubTabChange,
+  cartCount = 0,
 }) => {
   const isDark = theme === 'dark';
 
-  // Separate billing into two tabs: Type & Search Billing (first) & Barcode Billing (second)
-  const [billingTab, setBillingTab] = useState<'barcode' | 'search'>('search');
+  // Three sub-tabs: Type & Search Billing, Barcode Billing, and Cart
+  const [internalTab, setInternalTab] = useState<'barcode' | 'search' | 'cart'>('search');
+  const billingTab = activeSubTab || internalTab;
+
+  const handleTabSwitch = (tab: 'search' | 'barcode' | 'cart') => {
+    if (onSubTabChange) {
+      onSubTabChange(tab);
+    }
+    setInternalTab(tab);
+  };
 
   // Camera Scanner States (Camera is OFF by default; opened via button)
   const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
@@ -49,13 +65,24 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
   const [torchOn, setTorchOn] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [manualCode, setManualCode] = useState<string>('');
-  const [lastScanned, setLastScanned] = useState<{ code: string; name?: string; time: number } | null>(null);
+  const [manualQty, setManualQty] = useState<number>(1);
+  const [lastScanned, setLastScanned] = useState<{ code: string; name?: string; time: number; qty?: number } | null>(null);
 
   // Type & Search Billing States
   const [productSearchQuery, setProductSearchQuery] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [selectedProductId, setSelectedProductId] = useState<string>('');
+  const [dropdownQty, setDropdownQty] = useState<number>(1);
   const [recentAddedName, setRecentAddedName] = useState<string | null>(null);
+  const [recentAddedQty, setRecentAddedQty] = useState<number>(1);
+
+  // Per-product quantity selection in list
+  const [itemQuantities, setItemQuantities] = useState<Record<string, number>>({});
+
+  const getItemQty = (id: string) => itemQuantities[id] || 1;
+  const setItemQty = (id: string, qty: number) => {
+    setItemQuantities((prev) => ({ ...prev, [id]: Math.max(1, qty) }));
+  };
 
   const html5QrcodeRef = useRef<Html5Qrcode | null>(null);
   const scannerContainerId = 'barcode-reader-viewfinder';
@@ -70,19 +97,20 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
     Html5QrcodeSupportedFormats.QR_CODE,
   ];
 
-  const handleBarcodeDetected = (decodedText: string) => {
+  const handleBarcodeDetected = (decodedText: string, quantity: number = 1) => {
+    const qtyToAdd = Math.max(1, quantity);
     const now = Date.now();
     if (lastScanned && lastScanned.code === decodedText && now - lastScanned.time < 1200) {
       return;
     }
 
     const matched = products.find((p) => p.barcode === decodedText);
-    setLastScanned({ code: decodedText, name: matched?.name, time: now });
+    setLastScanned({ code: decodedText, name: matched?.name, time: now, qty: qtyToAdd });
 
     if (enableSound) playScanBeep();
     if (enableHaptics) triggerHaptic([50, 40, 50]);
 
-    onScanSuccess(decodedText);
+    onScanSuccess(decodedText, qtyToAdd);
   };
 
   const startCamera = async () => {
@@ -106,7 +134,7 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
         { facingMode: 'environment' },
         config,
         (decodedText) => {
-          handleBarcodeDetected(decodedText);
+          handleBarcodeDetected(decodedText, 1);
         },
         () => {}
       );
@@ -176,29 +204,40 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
     return ['ALL', ...Array.from(set)];
   }, [products]);
 
-  // Filter products based on search query and category
+  // Filter products based on search query (Name, Barcode, Category, Description, and Price)
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
       const matchCat = selectedCategory === 'ALL' || p.category === selectedCategory;
       if (!matchCat) return false;
 
       if (!productSearchQuery.trim()) return true;
-      const q = productSearchQuery.toLowerCase();
+      const rawQ = productSearchQuery.trim().toLowerCase();
+      const cleanNumQuery = rawQ.replace(/[^0-9.]/g, '');
+
+      // Check if query matches price (e.g. searching "120", "50", "₹120")
+      const priceMatch = cleanNumQuery !== '' && (
+        p.price.toString().includes(cleanNumQuery) ||
+        Math.round(p.price).toString() === cleanNumQuery
+      );
+
       return (
-        p.name.toLowerCase().includes(q) ||
-        p.category.toLowerCase().includes(q) ||
-        p.barcode.includes(q) ||
-        (p.description && p.description.toLowerCase().includes(q))
+        p.name.toLowerCase().includes(rawQ) ||
+        p.category.toLowerCase().includes(rawQ) ||
+        p.barcode.includes(rawQ) ||
+        (p.description && p.description.toLowerCase().includes(rawQ)) ||
+        priceMatch
       );
     });
   }, [products, productSearchQuery, selectedCategory]);
 
-  const handleProductSelect = (productId: string) => {
+  const handleProductSelect = (productId: string, quantity: number = 1) => {
     if (!productId) return;
     const prod = products.find((p) => p.id === productId);
     if (prod) {
-      handleBarcodeDetected(prod.barcode);
+      const qtyToAdd = Math.max(1, quantity);
+      handleBarcodeDetected(prod.barcode, qtyToAdd);
       setRecentAddedName(prod.name);
+      setRecentAddedQty(qtyToAdd);
       setSelectedProductId('');
       setTimeout(() => setRecentAddedName(null), 2500);
     }
@@ -210,16 +249,17 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
         isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200 shadow-slate-200/50'
       }`}
     >
-      {/* Distinct billing tabs: Type & Search Billing (First) & Barcode Billing (Second) */}
+      {/* 3 Navigation Tabs: Type & Search, Barcode, and Cart */}
       <div
         className={`p-2 border-b flex items-center space-x-2 ${
           isDark ? 'bg-slate-950/80 border-slate-800' : 'bg-slate-100 border-slate-200'
         }`}
       >
+        {/* Tab 1: Type & Search Billing */}
         <button
           type="button"
-          onClick={() => setBillingTab('search')}
-          className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+          onClick={() => handleTabSwitch('search')}
+          className={`flex-1 py-2.5 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-1.5 cursor-pointer ${
             billingTab === 'search'
               ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
               : isDark
@@ -227,14 +267,15 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
               : 'text-slate-600 hover:text-slate-900 hover:bg-white'
           }`}
         >
-          <Search className="w-4 h-4" />
-          <span>Type & Search Billing</span>
+          <Search className="w-4 h-4 shrink-0" />
+          <span>Type & Search</span>
         </button>
 
+        {/* Tab 2: Barcode Billing */}
         <button
           type="button"
-          onClick={() => setBillingTab('barcode')}
-          className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-2 cursor-pointer ${
+          onClick={() => handleTabSwitch('barcode')}
+          className={`flex-1 py-2.5 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-1.5 cursor-pointer ${
             billingTab === 'barcode'
               ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
               : isDark
@@ -242,8 +283,31 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
               : 'text-slate-600 hover:text-slate-900 hover:bg-white'
           }`}
         >
-          <Barcode className="w-4 h-4" />
-          <span>Barcode Billing</span>
+          <Barcode className="w-4 h-4 shrink-0" />
+          <span>Barcode</span>
+        </button>
+
+        {/* Tab 3: Cart with item count badge */}
+        <button
+          type="button"
+          onClick={() => handleTabSwitch('cart')}
+          className={`flex-1 py-2.5 px-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center space-x-1.5 cursor-pointer ${
+            billingTab === 'cart'
+              ? 'bg-purple-600 text-white shadow-md shadow-purple-600/30'
+              : isDark
+              ? 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+          }`}
+        >
+          <div className="relative flex items-center space-x-1.5">
+            <ShoppingBag className="w-4 h-4 shrink-0" />
+            <span>Cart</span>
+            {cartCount > 0 && (
+              <span className="bg-amber-500 text-slate-950 text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                {cartCount}
+              </span>
+            )}
+          </div>
         </button>
       </div>
 
@@ -255,7 +319,7 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
             <span>Added "{recentAddedName}" to Bill!</span>
           </div>
           <span className="text-[10px] bg-emerald-500/30 text-emerald-300 px-2 py-0.5 rounded-full font-mono font-bold">
-            +1 Added
+            +{recentAddedQty} Added
           </span>
         </div>
       )}
@@ -361,16 +425,17 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
             </div>
           )}
 
-          {/* Manual Barcode Input Field */}
+          {/* Manual Barcode Input Field with Quantity */}
           <form
             onSubmit={(e) => {
               e.preventDefault();
               if (manualCode.trim()) {
-                handleBarcodeDetected(manualCode.trim());
+                handleBarcodeDetected(manualCode.trim(), manualQty);
                 setManualCode('');
+                setManualQty(1);
               }
             }}
-            className="flex items-center space-x-2"
+            className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2"
           >
             <div className="relative flex-1">
               <input
@@ -386,13 +451,43 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
               />
               <Keyboard className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
             </div>
-            <button
-              type="submit"
-              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center space-x-1.5 cursor-pointer"
-            >
-              <PlusCircle className="w-4 h-4" />
-              <span>Add</span>
-            </button>
+
+            <div className="flex items-center space-x-2">
+              <div className={`flex items-center border rounded-xl p-0.5 ${
+                isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-300'
+              }`}>
+                <button
+                  type="button"
+                  onClick={() => setManualQty((prev) => Math.max(1, prev - 1))}
+                  className="w-7 h-8 flex items-center justify-center text-slate-400 hover:text-white"
+                >
+                  <Minus className="w-3.5 h-3.5" />
+                </button>
+                <input
+                  type="number"
+                  min="1"
+                  value={manualQty}
+                  onChange={(e) => setManualQty(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="w-12 text-center text-xs font-mono font-bold bg-transparent focus:outline-none"
+                  title="Quantity"
+                />
+                <button
+                  type="button"
+                  onClick={() => setManualQty((prev) => prev + 1)}
+                  className="w-7 h-8 flex items-center justify-center text-slate-400 hover:text-white"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <button
+                type="submit"
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center space-x-1.5 cursor-pointer shrink-0"
+              >
+                <PlusCircle className="w-4 h-4" />
+                <span>Add</span>
+              </button>
+            </div>
           </form>
 
           {/* Recent Scanned Feedback */}
@@ -407,6 +502,11 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
                 <div>
                   <span className="font-bold">{lastScanned.name || 'Scanned Barcode'}</span>
                   <span className="text-[10px] font-mono ml-2 opacity-80">({lastScanned.code})</span>
+                  {lastScanned.qty && lastScanned.qty > 1 && (
+                    <span className="ml-2 font-mono text-[10px] bg-emerald-500/20 px-1.5 py-0.5 rounded">
+                      x{lastScanned.qty}
+                    </span>
+                  )}
                 </div>
               </div>
               <span className="text-[10px] opacity-75">Just now</span>
@@ -418,13 +518,13 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
       {/* TAB 2: TYPE & SEARCH BILLING */}
       {billingTab === 'search' && (
         <div className="p-4 space-y-3.5">
-          {/* Search Box */}
+          {/* Search Box - Matches name, category, barcode, and PRICE */}
           <div className="relative">
             <input
               type="text"
               value={productSearchQuery}
               onChange={(e) => setProductSearchQuery(e.target.value)}
-              placeholder="Search product name, category, or barcode..."
+              placeholder="Search by product name, price (e.g. 120), category, barcode..."
               className={`w-full pl-9 pr-8 py-2.5 border rounded-xl text-xs focus:outline-none focus:border-emerald-500 transition-colors ${
                 isDark
                   ? 'bg-slate-950 border-slate-800 text-white placeholder-slate-400'
@@ -434,6 +534,7 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
             {productSearchQuery.length > 0 && (
               <button
+                type="button"
                 onClick={() => setProductSearchQuery('')}
                 className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 cursor-pointer"
               >
@@ -462,31 +563,82 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
             ))}
           </div>
 
-          {/* Dropdown Selector */}
-          <div className="space-y-1">
+          {/* Dropdown Selector with Quantity Box */}
+          <div className="space-y-1.5">
             <label className={`text-[10px] font-bold uppercase tracking-wider block ${
               isDark ? 'text-slate-400' : 'text-slate-500'
             }`}>
               Select Product from Dropdown:
             </label>
-            <select
-              value={selectedProductId}
-              onChange={(e) => handleProductSelect(e.target.value)}
-              className={`w-full px-3 py-2 border rounded-xl text-xs focus:outline-none focus:border-emerald-500 font-medium cursor-pointer ${
-                isDark
-                  ? 'bg-slate-950 border-slate-800 text-white'
-                  : 'bg-white border-slate-300 text-slate-900'
-              }`}
-            >
-              <option value="">
-                -- Choose product to add ({filteredProducts.length} available) --
-              </option>
-              {filteredProducts.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} — {currencySymbol}{p.price.toFixed(2)} ({p.category} | Stock: {p.stock} {p.unit})
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <select
+                value={selectedProductId}
+                onChange={(e) => setSelectedProductId(e.target.value)}
+                className={`flex-1 px-3 py-2 border rounded-xl text-xs focus:outline-none focus:border-emerald-500 font-medium cursor-pointer ${
+                  isDark
+                    ? 'bg-slate-950 border-slate-800 text-white'
+                    : 'bg-white border-slate-300 text-slate-900'
+                }`}
+              >
+                <option value="">
+                  -- Choose product to add ({filteredProducts.length} available) --
                 </option>
-              ))}
-            </select>
+                {filteredProducts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {currencySymbol}{p.price.toFixed(2)} ({p.category} | Stock: {p.stock} {p.unit})
+                  </option>
+                ))}
+              </select>
+
+              <div className="flex items-center space-x-2">
+                {/* Quantity Input Box with Increment/Decrement */}
+                <div className={`flex items-center border rounded-xl p-0.5 ${
+                  isDark ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-300'
+                }`}>
+                  <button
+                    type="button"
+                    onClick={() => setDropdownQty((prev) => Math.max(1, prev - 1))}
+                    className="w-7 h-8 flex items-center justify-center text-slate-400 hover:text-white"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </button>
+                  <input
+                    type="number"
+                    min="1"
+                    value={dropdownQty}
+                    onChange={(e) => setDropdownQty(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                    className="w-12 text-center text-xs font-mono font-bold bg-transparent focus:outline-none"
+                    title="Quantity to add"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setDropdownQty((prev) => prev + 1)}
+                    className="w-7 h-8 flex items-center justify-center text-slate-400 hover:text-white"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedProductId) {
+                      handleProductSelect(selectedProductId, dropdownQty);
+                      setDropdownQty(1);
+                    }
+                  }}
+                  disabled={!selectedProductId}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer shrink-0 ${
+                    selectedProductId
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md'
+                      : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                  }`}
+                >
+                  <PlusCircle className="w-4 h-4" />
+                  <span>+ Add to Bill</span>
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Interactive Products List Tray */}
@@ -514,56 +666,104 @@ export const BarcodeScanner: React.FC<BarcodeScannerProps> = ({
                 </p>
               </div>
             ) : filteredProducts.length === 0 ? (
-              <p className="text-center py-4 text-slate-500 text-xs">
-                No products match "{productSearchQuery}". Try another keyword or change category.
+              <p className="text-center py-6 text-slate-500 text-xs">
+                No products match "{productSearchQuery}". Try another keyword or price.
               </p>
             ) : (
-              <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
-                {filteredProducts.map((p) => (
-                  <div
-                    key={p.id}
-                    onClick={() => handleProductSelect(p.id)}
-                    className={`border rounded-xl p-2.5 flex items-center justify-between cursor-pointer transition-all group ${
-                      isDark
-                        ? 'bg-slate-950/80 hover:bg-emerald-950/40 border-slate-800 hover:border-emerald-500/40'
-                        : 'bg-white hover:bg-emerald-50/80 border-slate-200 hover:border-emerald-300 shadow-xs'
-                    }`}
-                  >
-                    <div className="space-y-0.5 min-w-0 pr-2">
-                      <p className={`text-xs font-bold truncate ${
-                        isDark ? 'text-white group-hover:text-emerald-300' : 'text-slate-900 group-hover:text-emerald-800'
-                      }`}>
-                        {p.name}
-                      </p>
-                      <div className="flex items-center space-x-2 text-[10px] text-slate-400">
-                        <span className="bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono text-[9px]">
-                          {p.barcode}
+              <div className="max-h-60 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                {filteredProducts.map((p) => {
+                  const currentQty = getItemQty(p.id);
+                  return (
+                    <div
+                      key={p.id}
+                      className={`border rounded-xl p-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 transition-all group ${
+                        isDark
+                          ? 'bg-slate-950/80 hover:bg-emerald-950/40 border-slate-800 hover:border-emerald-500/40'
+                          : 'bg-white hover:bg-emerald-50/80 border-slate-200 hover:border-emerald-300 shadow-xs'
+                      }`}
+                    >
+                      <div className="space-y-0.5 min-w-0 pr-2">
+                        <p className={`text-xs font-bold truncate ${
+                          isDark ? 'text-white group-hover:text-emerald-300' : 'text-slate-900 group-hover:text-emerald-800'
+                        }`}>
+                          {p.name}
+                        </p>
+                        <div className="flex items-center flex-wrap gap-1.5 text-[10px] text-slate-400">
+                          <span className="bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono text-[9px]">
+                            {p.barcode}
+                          </span>
+                          <span>•</span>
+                          <span className="text-emerald-400 font-semibold">{p.category}</span>
+                          <span>•</span>
+                          <span className={p.stock <= 5 ? 'text-rose-400 font-bold' : 'text-slate-400'}>
+                            {p.stock} {p.unit}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between sm:justify-end space-x-2 shrink-0">
+                        <span className="text-xs font-black text-emerald-400 font-mono mr-1">
+                          {currencySymbol}{p.price.toFixed(2)}
                         </span>
-                        <span>•</span>
-                        <span className="text-emerald-400 font-semibold">{p.category}</span>
-                        <span>•</span>
-                        <span className={p.stock <= 5 ? 'text-rose-400 font-bold' : 'text-slate-400'}>
-                          {p.stock} {p.unit}
-                        </span>
+
+                        {/* Quantity Input Box with Increment/Decrement for Fast Adding */}
+                        <div className={`flex items-center border rounded-lg p-0.5 ${
+                          isDark ? 'bg-slate-900 border-slate-800' : 'bg-slate-100 border-slate-300'
+                        }`}>
+                          <button
+                            type="button"
+                            onClick={() => setItemQty(p.id, currentQty - 1)}
+                            className="w-5 h-6 flex items-center justify-center text-slate-400 hover:text-white"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+                          <input
+                            type="number"
+                            min="1"
+                            value={currentQty}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              if (!isNaN(val)) setItemQty(p.id, val);
+                            }}
+                            className="w-10 text-center text-xs font-mono font-bold bg-transparent text-white border-0 focus:outline-none"
+                            title="Quantity to add"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setItemQty(p.id, currentQty + 1)}
+                            className="w-5 h-6 flex items-center justify-center text-slate-400 hover:text-white"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleProductSelect(p.id, currentQty);
+                          }}
+                          className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold transition-all cursor-pointer shadow flex items-center space-x-1"
+                        >
+                          <span>+ Add</span>
+                        </button>
                       </div>
                     </div>
-
-                    <div className="flex items-center space-x-2.5 flex-shrink-0">
-                      <span className="text-xs font-black text-emerald-400 font-mono">
-                        {currencySymbol}{p.price.toFixed(2)}
-                      </span>
-                      <button
-                        type="button"
-                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold transition-all cursor-pointer shadow"
-                      >
-                        + Add
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* TAB 3: CART PREVIEW (When active inside scanner on small screens) */}
+      {billingTab === 'cart' && (
+        <div className="p-4 text-center space-y-3">
+          <ShoppingBag className="w-8 h-8 text-purple-400 mx-auto" />
+          <p className="text-xs font-bold text-white">Viewing Cart ({cartCount} items)</p>
+          <p className="text-[11px] text-slate-400">
+            Use the Cart section to review items, edit quantities, apply discounts, or proceed to checkout.
+          </p>
         </div>
       )}
     </div>

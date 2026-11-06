@@ -11,13 +11,14 @@ import {
   UserCheck,
   Sun,
   Moon,
-  LogOut
+  LogOut,
+  Calculator
 } from 'lucide-react';
 import { Role, ThemeMode, UserSession } from '../types';
 
 interface NavbarProps {
-  activeTab: 'billing' | 'inventory' | 'reports' | 'settings';
-  setActiveTab: (tab: 'billing' | 'inventory' | 'reports' | 'settings') => void;
+  activeTab: 'billing' | 'offline' | 'inventory' | 'reports' | 'settings';
+  setActiveTab: (tab: 'billing' | 'offline' | 'inventory' | 'reports' | 'settings') => void;
   cartCount: number;
   role: Role;
   storeName: string;
@@ -182,6 +183,21 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </div>
           <span>Billing Counter</span>
+        </button>
+
+        {/* Offline / Hand-Calculated Billing - Visible to both Admin and Employee */}
+        <button
+          onClick={() => setActiveTab('offline')}
+          className={`flex-1 py-2 px-3 rounded-xl flex items-center justify-center space-x-2 text-xs font-bold transition-all ${
+            activeTab === 'offline'
+              ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
+              : isDark
+              ? 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+          }`}
+        >
+          <Calculator className="w-4 h-4" />
+          <span>Offline Transactions</span>
         </button>
 
         {/* Admin-only Navigation Tabs */}

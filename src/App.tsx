@@ -8,6 +8,7 @@ import { InventoryManager } from './components/InventoryManager';
 import { SalesReports } from './components/SalesReports';
 import { SettingsModal } from './components/SettingsModal';
 import { LoginPage } from './components/LoginPage';
+import { OfflineBilling } from './components/OfflineBilling';
 import { Product, CartItem, Invoice, StoreSettings, Role, ThemeMode, UserSession, DiscountType } from './types';
 import {
   getProducts,
@@ -41,7 +42,8 @@ export const App: React.FC = () => {
   const [session, setSession] = useState<UserSession | null>(getUserSession());
 
   // App Navigation Tabs
-  const [activeTab, setActiveTab] = useState<'billing' | 'inventory' | 'reports' | 'settings'>('billing');
+  const [activeTab, setActiveTab] = useState<'billing' | 'offline' | 'inventory' | 'reports' | 'settings'>('billing');
+  const [billingSubTab, setBillingSubTab] = useState<'search' | 'barcode' | 'cart'>('search');
   const [products, setProducts] = useState<Product[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [settings, setSettings] = useState<StoreSettings>(getSettings());
@@ -138,8 +140,9 @@ export const App: React.FC = () => {
     setActiveTab('billing');
   };
 
-  // Barcode detection handler
-  const handleScanSuccess = (scannedBarcode: string) => {
+  // Barcode detection handler with quantity support
+  const handleScanSuccess = (scannedBarcode: string, quantity: number = 1) => {
+    const qtyToAdd = Math.max(1, quantity);
     const foundProduct = products.find(p => p.barcode === scannedBarcode);
 
     if (foundProduct) {
@@ -147,14 +150,14 @@ export const App: React.FC = () => {
         const existingIdx = prevCart.findIndex(item => item.product.id === foundProduct.id);
         if (existingIdx > -1) {
           const updated = [...prevCart];
-          updated[existingIdx].quantity += 1;
+          updated[existingIdx].quantity += qtyToAdd;
           return updated;
         } else {
           return [
             ...prevCart,
             {
               product: foundProduct,
-              quantity: 1,
+              quantity: qtyToAdd,
               discountType: 'PERCENT',
               discountValue: 0,
               discountPercent: 0,
@@ -232,8 +235,14 @@ export const App: React.FC = () => {
     });
     setProducts(updatedProducts);
 
-    // Clear cart and show receipt view modal
+    // Clear cart, reset bill discounts, and show receipt view modal
     setCart([]);
+    setCheckoutConfig({
+      includeTax: settings.defaultIncludeTax ?? false,
+      overallDiscountType: 'PERCENT',
+      overallDiscountValue: 0,
+      overallDiscountAmount: 0,
+    });
     setIsCheckoutOpen(false);
     setViewingInvoice(saved);
   };
@@ -303,33 +312,101 @@ export const App: React.FC = () => {
       <main className="flex-1 max-w-7xl w-full mx-auto p-3 sm:p-4 overflow-hidden">
         {/* Billing Counter - Accessible to Employee and Admin */}
         {activeTab === 'billing' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-full">
-            {/* Left Column: Barcode Scanner Viewfinder & Dropdown Selector */}
-            <div className="lg:col-span-6 space-y-4">
-              <BarcodeScanner
-                onScanSuccess={handleScanSuccess}
-                products={products}
-                enableSound={settings.enableSound}
-                enableHaptics={settings.enableHaptics}
-                currencySymbol={settings.currencySymbol}
-                theme={theme}
-              />
-            </div>
+          <div className="space-y-4">
+            {billingSubTab === 'cart' ? (
+              /* When Cart tab is selected: Full-focus Cart View with 3-tab switcher */
+              <div className="max-w-4xl mx-auto space-y-4">
+                <BarcodeScanner
+                  onScanSuccess={handleScanSuccess}
+                  products={products}
+                  enableSound={settings.enableSound}
+                  enableHaptics={settings.enableHaptics}
+                  currencySymbol={settings.currencySymbol}
+                  theme={theme}
+                  activeSubTab={billingSubTab}
+                  onSubTabChange={setBillingSubTab}
+                  cartCount={cart.reduce((s, i) => s + i.quantity, 0)}
+                />
+                <CartView
+                  cart={cart}
+                  onUpdateQuantity={handleUpdateQuantity}
+                  onRemoveItem={handleRemoveCartItem}
+                  onApplyLineDiscount={handleApplyLineDiscount}
+                  onClearCart={() => setCart([])}
+                  onProceedToCheckout={handleProceedToCheckout}
+                  settings={settings}
+                  theme={theme}
+                />
+              </div>
+            ) : (
+              /* When Type & Search or Barcode is selected */
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-full">
+                {/* Left Column: Barcode Scanner / Search View with 3 Tabs */}
+                <div className="lg:col-span-7 space-y-3">
+                  <BarcodeScanner
+                    onScanSuccess={handleScanSuccess}
+                    products={products}
+                    enableSound={settings.enableSound}
+                    enableHaptics={settings.enableHaptics}
+                    currencySymbol={settings.currencySymbol}
+                    theme={theme}
+                    activeSubTab={billingSubTab}
+                    onSubTabChange={setBillingSubTab}
+                    cartCount={cart.reduce((s, i) => s + i.quantity, 0)}
+                  />
 
-            {/* Right Column: Real-time Cart & Checkout */}
-            <div className="lg:col-span-6">
-              <CartView
-                cart={cart}
-                onUpdateQuantity={handleUpdateQuantity}
-                onRemoveItem={handleRemoveCartItem}
-                onApplyLineDiscount={handleApplyLineDiscount}
-                onClearCart={() => setCart([])}
-                onProceedToCheckout={handleProceedToCheckout}
-                settings={settings}
-                theme={theme}
-              />
-            </div>
+                  {/* On Mobile / Small Screens: Fast Action Pill to Switch to Cart */}
+                  <div className="lg:hidden">
+                    <button
+                      type="button"
+                      onClick={() => setBillingSubTab('cart')}
+                      className={`w-full py-3 px-4 rounded-xl font-bold text-xs flex items-center justify-between shadow-lg transition-all cursor-pointer ${
+                        cart.length > 0
+                          ? 'bg-purple-600 hover:bg-purple-500 text-white'
+                          : isDark
+                          ? 'bg-slate-900 text-slate-400 border border-slate-800'
+                          : 'bg-white text-slate-600 border border-slate-200'
+                      }`}
+                    >
+                      <span className="flex items-center space-x-2">
+                        <span>🛒 View Cart</span>
+                        {cart.length > 0 && (
+                          <span className="bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full font-mono text-[10px]">
+                            {cart.reduce((s, i) => s + i.quantity, 0)} items
+                          </span>
+                        )}
+                      </span>
+                      <span>Switch to Cart Tab →</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Right Column: Real-time Cart & Checkout (Always accessible on desktop) */}
+                <div className="hidden lg:block lg:col-span-5">
+                  <CartView
+                    cart={cart}
+                    onUpdateQuantity={handleUpdateQuantity}
+                    onRemoveItem={handleRemoveCartItem}
+                    onApplyLineDiscount={handleApplyLineDiscount}
+                    onClearCart={() => setCart([])}
+                    onProceedToCheckout={handleProceedToCheckout}
+                    settings={settings}
+                    theme={theme}
+                  />
+                </div>
+              </div>
+            )}
           </div>
+        )}
+
+        {/* Offline Transactions - Hand-Calculated Billing without items */}
+        {activeTab === 'offline' && (
+          <OfflineBilling
+            onCompleteCheckout={handleCompleteCheckout}
+            settings={settings}
+            theme={theme}
+            cashierName={session.displayName || (isAdmin ? 'Manager (Admin)' : 'Store Cashier')}
+          />
         )}
 
         {/* Catalog & Stock - Admin Only */}
@@ -392,7 +469,15 @@ export const App: React.FC = () => {
           onClose={() => setViewingInvoice(null)}
           onNewBill={() => {
             setViewingInvoice(null);
+            setCart([]);
+            setCheckoutConfig({
+              includeTax: settings.defaultIncludeTax ?? false,
+              overallDiscountType: 'PERCENT',
+              overallDiscountValue: 0,
+              overallDiscountAmount: 0,
+            });
             setActiveTab('billing');
+            setBillingSubTab('search');
           }}
         />
       )}
